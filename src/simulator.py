@@ -8,7 +8,6 @@ class PotatoSimulator:
     Envuelve AquaCrop para simular el cultivo de papa paso a paso.
     El usuario aplica riego manualmente cada día llamando a step().
     """
-
     def __init__(self, weather_df, soil, crop, initial_wc=None):
         """
         Parámetros
@@ -21,14 +20,15 @@ class PotatoSimulator:
         self.weather_df = weather_df
         self.soil       = soil
         self.crop       = crop
-        self.initial_wc = initial_wc or InitialWaterContent(value=["FC"])
+        self.initial_wc = initial_wc or InitialWaterContent(wc_type='Pct', value=[50])
 
         # Estado interno
-        self._model              = None
-        self.current_step        = 0
-        self.start_date          = None
-        self._daily_log          = []
-        self._irrigation_history = []
+        self.current_step        = 0      # Dia actual
+        self.start_date          = None   # Guarda el día de inicio
+
+        self._model              = None   # Guarda el simulador
+        self._daily_log          = []     # Guarda parámetros diarios del simulador
+        self._irrigation_history = []     # Guarda el historial de riego
 
     # ------------------------------------------------------------------
     # Interfaz pública
@@ -44,30 +44,24 @@ class PotatoSimulator:
         sim_end   : str  "YYYY/MM/DD"
         """
         self.current_step = 0
+        self.start_date   = datetime.strptime(sim_start, "%Y/%m/%d")
+
         self._daily_log.clear()
         self._irrigation_history.clear()
-        self.start_date = datetime.strptime(sim_start, "%Y/%m/%d")
 
-        # FIX: irrigation_method=5 → el único método que respeta
-        # el valor de .depth inyectado manualmente cada paso.
-        # method=0 es solo lluvia (ignora depth completamente).
-        irr_mgmt = IrrigationManagement(irrigation_method=5, MaxIrr = 50)
+        irr_mgmt = IrrigationManagement(irrigation_method=5, MaxIrr = 50)  # Riego = min(depth, 50)
 
         self._model = AquaCropModel(
-            sim_start_time=sim_start,
-            sim_end_time=sim_end,
-            weather_df=self.weather_df,
-            soil=self.soil,
-            crop=self.crop,
-            initial_water_content=self.initial_wc,
-            irrigation_management=irr_mgmt,
+            sim_start_time        = sim_start,
+            sim_end_time          = sim_end,
+            weather_df            = self.weather_df,
+            soil                  = self.soil,
+            crop                  = self.crop,
+            initial_water_content = self.initial_wc,
+            irrigation_management = irr_mgmt,
         )
 
         self._model._initialize()
-
-        # FIX: No llamar _save_daily_state() aquí.
-        # Antes del primer step(), _init_cond no tiene valores reales aún.
-        # El historial empieza después del primer step().
 
         print(f"Simulación iniciada → {sim_start} hasta {sim_end}")
 
@@ -88,13 +82,8 @@ class PotatoSimulator:
         if self.is_finished():
             return self.get_current_state()
 
-        # FIX: method=5 lee IrrMngt.depth directamente.
-        # Siempre asignamos el valor (incluso 0) para evitar
-        # que quede el valor del día anterior.
         self._model._param_struct.IrrMngt.depth = float(irrigation_depth)
 
-        # Avanzar un día — initialize_model=False es obligatorio
-        # para continuar desde donde estamos (no reiniciar).
         self._model.run_model(num_steps=1, initialize_model=False)
         self.current_step += 1
 
@@ -140,31 +129,30 @@ class PotatoSimulator:
 
         state = {
             # Tiempo
-            "step":           self.current_step,
-            "date":           self.get_current_date(),
-            "dap":            int(cond.dap),
-            "growing_season": bool(cond.growing_season),
-            "growth_stage":   int(cond.growth_stage),
+            "step":           self.current_step,         # Nro de paso         
+            "date":           self.get_current_date(),   # Fecha
+            "dap":            int(cond.dap),             # Dias después de siembra
+            "growing_season": bool(cond.growing_season), 
+            "growth_stage":   int(cond.growth_stage),    # Etapa de crecimiento
 
             # Cultivo
-            "canopy_cover":   round(float(cond.canopy_cover), 4),
+            "canopy_cover":   round(float(cond.canopy_cover), 4),      # Covertura del dosel
             "biomass":        round(float(cond.biomass), 4),
             "dry_yield":      round(float(cond.DryYield), 4),
             "fresh_yield":    round(float(cond.FreshYield), 4),
-            "harvest_index":  round(float(cond.harvest_index), 4),
+            "harvest_index":  round(float(cond.harvest_index), 4),     # Índice de Cosecha
             "z_root":         round(float(cond.z_root), 3),
 
             # Agua
-            # FIX: taw viene de _init_cond.taw, no de _param_struct.Soil.taw
-            "depletion":      round(float(cond.depletion), 2),
-            "taw":            round(float(cond.taw), 2),
-            "irr_cumulative": round(float(cond.irr_cum), 2),
-            "irr_today":      round(float(self._model._param_struct.IrrMngt.depth), 2),
-            "et0":            round(float(cond.et0), 3),
+            "depletion":      round(float(cond.depletion), 2),         # Agua que falta para volver a máxima capacidad de campo
+            "taw":            round(float(cond.taw), 2),               # Cantidad Máxima de agua que el suelo puede soportar
+            "irr_cumulative": round(float(cond.irr_cum), 2),           # Riego acumulado
+            "irr_today":      round(float(self._model._param_struct.IrrMngt.depth), 2),  # Riego hoy
+            "et0":            round(float(cond.et0), 3),    # Evapotranspiración de referencia
 
             # Estado
-            "crop_mature":    bool(cond.crop_mature),
-            "crop_dead":      bool(cond.crop_dead),
+            "crop_mature":    bool(cond.crop_mature),       # Cultivo Maduro
+            "crop_dead":      bool(cond.crop_dead),         # Cultivo está muerto
         }
 
         self._daily_log.append(state)
@@ -185,10 +173,6 @@ class PotatoSimulator:
     def is_finished(self) -> bool:
         """
         True si la simulación terminó (cosecha o fin de período).
-
-        FIX: la lógica anterior comparaba current_step con len(weather_df),
-        lo cual no considera la fecha de fin real ni la cosecha anticipada.
-        La fuente correcta es model._clock_struct.model_is_finished.
         """
         if self._model is None:
             return True
@@ -201,10 +185,6 @@ class PotatoSimulator:
     def get_final_results(self) -> dict:
         """
         Resultados al terminar la simulación.
-
-        FIX: la versión original tenía la condición invertida:
-        'if not self.is_finished()' mostraba advertencia cuando SÍ
-        había terminado y retornaba None cuando NO había terminado.
         """
         if not self._daily_log:
             return {"summary": {}, "history": pd.DataFrame()}
