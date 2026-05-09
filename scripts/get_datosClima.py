@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import refet
 
-
 def get_power_data(lat, lon, params, start, end):
   """
   Extrae datos climáticos de NASA POWER
